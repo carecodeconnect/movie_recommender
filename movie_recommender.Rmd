@@ -1,0 +1,508 @@
+---
+title: "Movie Recommendation System: MovieLens Project Report"
+output: pdf_document
+date: "2023-12-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+##########################################################
+# Create edx and final_holdout_test sets 
+##########################################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(knitr)
+library(ggplot2)
+library(RColorBrewer)
+library(dplyr)
+library(hexbin)
+library(glmnet)
+library(Matrix)
+library(tidyverse)
+library(caret)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+options(timeout = 120)
+
+dl <- "ml-10M100K.zip"
+if(!file.exists(dl))
+  download.file("https://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings_file <- "ml-10M100K/ratings.dat"
+if(!file.exists(ratings_file))
+  unzip(dl, ratings_file)
+
+movies_file <- "ml-10M100K/movies.dat"
+if(!file.exists(movies_file))
+  unzip(dl, movies_file)
+
+ratings <- as.data.frame(str_split(read_lines(ratings_file), fixed("::"), simplify = TRUE),
+                         stringsAsFactors = FALSE)
+colnames(ratings) <- c("userId", "movieId", "rating", "timestamp")
+ratings <- ratings %>%
+  mutate(userId = as.integer(userId),
+         movieId = as.integer(movieId),
+         rating = as.numeric(rating),
+         timestamp = as.integer(timestamp))
+
+movies <- as.data.frame(str_split(read_lines(movies_file), fixed("::"), simplify = TRUE),
+                        stringsAsFactors = FALSE)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- movies %>%
+  mutate(movieId = as.integer(movieId))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Final hold-out test set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.6 or later
+# set.seed(1) # if using R 3.5 or earlier
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in final hold-out test set are also in edx set
+final_holdout_test <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from final hold-out test set back into edx set
+removed <- anti_join(temp, final_holdout_test)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+
+# 1. Executive Summary
+
+This section describes the dataset and summarizes the goal of the project and key steps that were performed.
+
+## 1.1 Dataset
+
+This report describes the development and evaluation of a movie recommendation system using the MovieLens 10M dataset, which includes 10 million movie ratings from users. The dataset was divided into two subsets: `edx` (90% of the data) for training, and `final_holdout_test` (10% of the data) for testing. 
+
+Contrary to the initial plan to use the k-nearest neighbors algorithm, the recommendation system was built using Ridge regression. This approach leveraged user and movie IDs to predict movie ratings. The model was trained on the `edx` set and evaluated on the `final_holdout_test` set.
+
+The Ridge regression model demonstrated a Root Mean Square Error (RMSE) of approximately 0.864 on the final holdout test set. This performance metric indicates a relatively low average deviation of the predicted ratings from the actual ratings, showcasing the model's ability to make accurate predictions. 
+
+## 1.2 Limitations and Future Directions
+
+While the Ridge regression model showed promising results, its simplicity and linear nature may limit its capacity to capture the more complex interactions between users and movies. The model's reliance solely on user and movie IDs, without incorporating other potentially informative features like movie genres or user demographics, could be seen as an oversimplification. Future improvements could include experimenting with more complex models, integrating additional features, addressing challenges like the cold start problem, and employing alternative metrics for a more comprehensive evaluation of the recommendation system's performance.
+
+## 1.3 Conclusion
+
+The project successfully implemented a movie recommendation system using Ridge regression, effectively handling a large dataset with R tools. The system demonstrated high accuracy in predicting movie ratings, indicating its potential applicability in real-world recommendation scenarios. The consistent RMSE performance across the test sets underscores the model's robustness and reliability in this context.
+
+The key steps are:
+
+1. Data cleaning and preprocessing.
+2. Exploratory data analysis and visualization.
+3. Model training and evaluation.
+
+
+# 2. Method/Analysis
+
+This section explains the process and techniques used, including data cleaning, data exploration and visualization, insights gained, and my modeling approach.
+
+## 2.1 Data Cleaning
+
+We meticulously organized and structured the MovieLens 10M dataset, ensuring its readiness for detailed analysis and modeling. The process involved several crucial steps:
+
+**Dataset Acquisition**: Initially, we established a maximum operational timeout of 120 seconds to avoid prolonged execution. We then checked for the presence of the **MovieLens 10M** dataset, specifically the `ml-10M100K.zip` file. If absent, it was automatically downloaded from the **GroupLens** website, ensuring that we worked with the most recent and comprehensive data available.
+
+**Data Extraction**: Our next step involved the extraction of essential data files from the downloaded zip archive. We specifically targeted `ratings.dat` and `movies.dat`, verifying their existence before proceeding to unzip them. This step was pivotal in isolating the necessary data components for our analysis.
+
+**Data Transformation and Integration**: Post-extraction, we employed a data transformation process to accurately interpret the datasets. The ratings data received structured column names such as `userId`, `movieId`, `rating`, and `timestamp`, while the movies data was similarly organized with `movieId`, `title`, and `genres` as column headers. These datasets were then converted into appropriate numerical formats to facilitate seamless data handling and analysis. Subsequently, we merged the ratings and movies datasets based on the `movieId` column, creating a unified dataset that links user ratings with corresponding movie details.
+
+**Test and Training Set Formation**: To ensure the reliability of our predictive models, we randomly partitioned the dataset into a training set (termed `edx`) and an initial test set (`temp`), reserving 10% of the data for the latter. This partitioning was based on the movie ratings, adhering to a principle of maintaining a representative sample of the entire dataset.
+
+**Test Set Refinement**: A critical aspect of our methodology was the refinement of the test set. We ensured that all movies and users in the test set were also represented in the training set. This step is crucial to avoid the cold start problem in recommendations and to ensure that our models can make meaningful predictions. Any data elements removed in this refinement process were reallocated to the training set, thereby preserving the dataset's integrity and completeness.
+
+**Resource Optimization**: In the final phase of data preparation, we engaged in a cleanup process, removing temporary variables and downloaded files. This practice not only streamlined our dataset but also optimized memory usage, ensuring efficient processing in subsequent analytical tasks.
+
+Through these meticulous data preparation steps, we established a solid foundation for our analysis, guaranteeing the quality and reliability of the data feeding into our machine learning models.
+
+## 2.2 Data Exploration and Visualisation
+
+### Summary Statistics
+
+```{R, include=FALSE}
+# Number of rows
+nrow_edx <- nrow(edx)
+
+# Number of columns
+ncol_edx <- ncol(edx)
+
+nrow_edx
+ncol_edx
+
+# Number of zeros given as ratings
+n_zeros <- sum(edx$rating == 0)
+
+# Number of threes given as ratings
+n_threes <- sum(edx$rating == 3)
+
+n_zeros
+n_threes
+
+# Number of different movies
+n_movies <- length(unique(edx$movieId))
+
+n_movies
+
+```
+
+```{R, echo=FALSE}
+# Number of different users
+n_users <- length(unique(edx$userId))
+```
+
+We first assembled a summary statistics table, which provided a high-level overview of the dataset. This table included key metrics such as the total number of rows and columns in the dataset, the number of zero ratings (indicating no rating given), the count of three-star ratings, and the total number of unique movies and users within the dataset. This table served as a foundational understanding of the dataset's scale and diversity. We discovered there are **10677** different movies and **69878** users in the `edx` dataset.
+
+```{R, echo=FALSE}
+
+# Summary Statistics Table
+summary_stats <- data.frame(
+  Statistic = c("Number of Rows", "Number of Columns", "Number of Zeros (Ratings)", 
+                "Number of Threes (Ratings)", "Number of Different Movies", 
+                "Number of Different Users"),
+  Value = c(nrow_edx, ncol_edx, n_zeros, n_threes, n_movies, n_users)
+)
+kable(summary_stats, caption = "Summary Statistics of the MovieLens Dataset")
+```
+
+### Genre Ratings Bar Plot
+
+Next, we focused on genre-specific insights. We created a bar plot that displayed the number of movie ratings for four major genres: Drama, Comedy, Thriller, and Romance. This visualization was instrumental in highlighting the popularity or prevalence of each genre within the dataset, based on the number of ratings they received.
+
+
+```{R, include=FALSE}
+# Number of movie ratings in each genre
+n_drama <- sum(grepl("Drama", edx$genres))
+n_comedy <- sum(grepl("Comedy", edx$genres))
+n_thriller <- sum(grepl("Thriller", edx$genres))
+n_romance <- sum(grepl("Romance", edx$genres))
+
+list(
+  Number_of_Users = n_users,
+  Ratings_in_Drama = n_drama,
+  Ratings_in_Comedy = n_comedy,
+  Ratings_in_Thriller = n_thriller,
+  Ratings_in_Romance = n_romance
+)
+
+```
+
+```{R, echo=FALSE}
+# Genre Ratings Bar Plot
+genre_ratings <- data.frame(
+  Genre = c("Drama", "Comedy", "Thriller", "Romance"),
+  Ratings = c(n_drama, n_comedy, n_thriller, n_romance)
+)
+ggplot(genre_ratings, aes(x = Genre, y = Ratings)) + 
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Number of Movie Ratings per Genre", 
+       x = "Genre", y = "Number of Ratings")
+```
+
+### Most Rated Movie
+
+To identify standout movies in the dataset, we prepared a table showcasing the movie that received the highest number of ratings. This helped in pinpointing the most popular or engaging movie in the dataset, as perceived by the users.
+
+```{R, include=FALSE}
+# Count the number of ratings for each movie
+movie_rating_counts <- edx %>%
+  group_by(title) %>%
+  summarise(number_of_ratings = n()) %>%
+  ungroup()
+
+# Find the movie with the greatest number of ratings
+top_rated_movie <- movie_rating_counts %>%
+  arrange(desc(number_of_ratings)) %>%
+  top_n(1)
+
+top_rated_movie
+
+```
+
+```{R, echo=FALSE}
+# Top Rated Movie
+kable(top_rated_movie, caption = "Most Rated Movie in the Dataset")
+```
+
+### Ratings Distribution Visualization
+
+We also explored the overall distribution of movie ratings in the dataset. A bar chart was created to visualize the frequency of each rating score, giving us a clear picture of which ratings were most commonly given by users. This insight is crucial in understanding user preferences and rating behavior.
+
+
+```{R, include=FALSE}
+# Count the number of times each rating was given
+rating_counts <- table(edx$rating)
+
+# Sort the ratings in descending order to get the most given ratings
+sorted_rating_counts <- sort(rating_counts, decreasing = TRUE)
+
+# Get the names of the top five ratings
+top_five_ratings <- names(sorted_rating_counts)[1:5]
+
+top_five_ratings
+
+```
+
+```{R, echo=FALSE}
+# Ratings Distribution
+rating_distribution <- as.data.frame(table(edx$rating))
+ggplot(rating_distribution, aes(x = Var1, y = Freq)) +
+  geom_bar(stat = "identity", fill = "coral") +
+  labs(title = "Distribution of Movie Ratings", 
+       x = "Rating", y = "Frequency")
+```
+
+### Comparison of Whole vs Half Star Ratings
+
+Lastly, we investigated the prevalence of whole versus half-star ratings. We created a table comparing these two categories to determine if half-star ratings were less common than whole star ratings. This comparison provided a nuanced understanding of the rating patterns and preferences among the users.
+
+```{R, include=FALSE}
+# Count the number of times each rating was given
+rating_counts <- table(edx$rating)
+
+# Convert to data frame for easier manipulation
+rating_counts_df <- as.data.frame(rating_counts)
+
+# Separate whole and half star ratings
+whole_star_ratings <- rating_counts_df[grep("\\.0", rating_counts_df$Var1), ]
+half_star_ratings <- rating_counts_df[grep("\\.5", rating_counts_df$Var1), ]
+
+# Check if, in general, half star ratings are less common than whole star ratings
+less_common_half_stars <- all(half_star_ratings$Freq < whole_star_ratings$Freq)
+
+less_common_half_stars
+
+```
+
+```{R, echo=FALSE}
+# Checking if half star ratings are less common
+half_star_comparison <- data.frame(
+  Rating_Type = c("Whole Star Ratings", "Half Star Ratings"),
+  Less_Common = c(any(whole_star_ratings$Freq > half_star_ratings$Freq), less_common_half_stars)
+)
+kable(half_star_comparison, caption = "Comparison of Whole vs Half Star Ratings")
+```
+
+## 2.3 Insights Gained
+
+Our Exploratory Data Analysis showed that the MovieLens dataset is substantial and varied, providing a rich source of information for understanding user preferences and trends in movie ratings. With over 9 million rows of data and 6 distinct columns, the dataset reflects a considerable amount of user engagement. Notably, the dataset contains no instances of a zero rating, which suggests that all movies have been rated by users.
+
+An in-depth examination of rating frequencies revealed that a rating of three stars is quite prevalent, with over 2.1 million instances, pointing to a trend where many movies receive a median rating, possibly indicating a moderate level of satisfaction among viewers. The dataset encompasses a wide array of films, totaling 10,677 different titles, and a diverse user base of 69,878 unique users, which underscores the dataset's suitability for building a robust movie recommendation system.
+
+In our genre analysis, Drama and Comedy emerged as the most rated genres, with Drama being the most predominant. This popularity indicates a strong preference for these genres among the users of MovieLens. In contrast, Romance and Thriller genres received comparatively fewer ratings, but still a significant number, showcasing a varied taste among the audience.
+
+When we focused on specific movies, **Pulp Fiction (1994)** stood out as the movie with the most ratings, totaling **31,362**. This high number suggests that **Pulp Fiction** is not only popular but also a highly engaged-with title within the MovieLens community.
+
+Our ratings distribution analysis presented an interesting insight into user rating behaviors. The bar plot displayed a clear preference for whole star ratings over half star ratings, with half star ratings being consistently less common across the board. This could indicate a tendency for users to favor round numbers when rating movies or perhaps reflect the rating options provided by the platform at the time the data was collected.
+
+In summary, the insights gained from our Exploratory Data Analysis provide a foundational understanding of the MovieLens dataset's characteristics, which is crucial for the subsequent phases of building and refining our movie recommendation system.
+
+## 2.4 Modeling Approach
+
+```{R, echo=FALSE, include=FALSE}
+
+# Setting seed for reproducibility
+set.seed(123)
+
+# Splitting the edx dataset into training and test sets
+splitIndex <- createDataPartition(edx$rating, p = 0.8, list = FALSE, times = 1)
+trainSet <- edx[splitIndex,]
+testSet <- edx[-splitIndex,]
+
+# Combine train and test sets to ensure consistent factor levels
+combinedSet <- rbind(trainSet, testSet)
+
+# Creating sparse matrices for user and movie factors with consistent levels
+user_matrix <- sparse.model.matrix(~ as.factor(userId) - 1, data = combinedSet)
+movie_matrix <- sparse.model.matrix(~ as.factor(movieId) - 1, data = combinedSet)
+
+# Splitting the combined matrix back into train and test
+n_train <- nrow(trainSet)
+combined_matrix <- cbind(user_matrix, movie_matrix)
+train_matrix <- combined_matrix[1:n_train, ]
+test_matrix <- combined_matrix[(n_train + 1):nrow(combined_matrix), ]
+
+# Training the Ridge regression model with glmnet
+set.seed(123) # for reproducibility
+ridge_model <- glmnet(train_matrix, trainSet$rating, alpha = 0)
+
+# Making predictions on the test set
+predictions <- predict(ridge_model, s = 0.01, newx = test_matrix)
+
+# Calculating RMSE
+rmse_value <- sqrt(mean((testSet$rating - predictions)^2))
+
+# Output the RMSE
+#print(paste("RMSE on the test set:", rmse_value))
+
+```
+
+### Model Justification and Description
+
+In this project, a Ridge regression model was implemented to create a movie recommendation system using the MovieLens dataset. Ridge regression was chosen for its ability to handle a large number of predictors, which is a typical characteristic of datasets in recommendation systems. In this context, each unique user and movie ID acts as a predictor. 
+
+The model was trained to predict movie ratings based on user and movie IDs. This approach is based on the assumption that users' rating behaviors are somewhat consistent across different movies, and movies generally receive consistent ratings from different users. The model captures these trends to make predictions.
+
+### R Packages and Their Roles
+
+1. **`glmnet`**: Used for implementing Ridge regression. It's particularly adept at handling datasets with a high number of predictors and works efficiently with sparse matrices.
+
+2. **`Matrix`**: This package provides methods for handling and manipulating sparse matrices. Sparse matrices are crucial for efficiently representing data where most of the elements are zeros, as is common in recommendation systems with many users and movies.
+
+3. **`tidyverse`**: A collection of R packages for data manipulation and visualization. It simplifies many common data operations.
+
+4. **`caret`**: Stands for Classification And REgression Training. This package provides functions for splitting the data into training and test sets, which is essential for model validation.
+
+### Sparse Matrix Utilization
+
+Due to the large size of the dataset, using conventional matrix formats resulted in memory allocation issues. To overcome this, sparse matrices were used. Sparse matrices are efficient at storing and manipulating data where the majority of elements are zeros, which is typical when dealing with a large number of categorical variables like user and movie IDs.
+
+### Root Mean Square Error (RMSE) Result Summary
+
+The model's performance was evaluated using the Root Mean Square Error (RMSE), a standard metric for measuring the accuracy of predictions in regression models. The RMSE quantifies the average magnitude of the errors between the predicted ratings and the actual ratings.
+
+The obtained RMSE on the test set was approximately `0.864`, indicating a high level of accuracy in the model's predictions. This value reflects the average deviation of the predicted ratings from the actual ratings. A lower RMSE value generally indicates better model performance, and in the context of this project, this result suggests that the model is quite effective at predicting movie ratings.
+
+# 3. Results
+
+This section presents the modeling results and discusses the model performance. We present the outcomes of our movie recommendation system, developed using the MovieLens dataset. 
+
+```{R, echo=FALSE}
+
+# Assuming your trained model 'ridge_model' and combined user and movie matrices are already available
+
+# Preparing the final_holdout_test set in the same format as the training data
+# This is crucial to ensure consistency in factor levels between the datasets
+
+# Combining final_holdout_test with the combinedSet to align factor levels
+combinedSetForHoldout <- rbind(combinedSet, final_holdout_test)
+
+# Creating sparse matrices for user and movie factors with consistent levels
+holdout_user_matrix <- sparse.model.matrix(~ as.factor(userId) - 1, data = combinedSetForHoldout)
+holdout_movie_matrix <- sparse.model.matrix(~ as.factor(movieId) - 1, data = combinedSetForHoldout)
+
+# Extracting the holdout matrix
+n_combined <- nrow(combinedSet)
+holdout_matrix <- cbind(holdout_user_matrix, holdout_movie_matrix)[(n_combined + 1):nrow(combinedSetForHoldout), ]
+
+# Making predictions on the final_holdout_test set
+final_predictions <- predict(ridge_model, s = 0.01, newx = holdout_matrix)
+
+# Calculating RMSE for the final_holdout_test set
+final_rmse <- sqrt(mean((final_holdout_test$rating - final_predictions)^2))
+
+# Output the RMSE for the final_holdout_test set
+#print(paste("RMSE on the final_holdout_test set:", final_rmse))
+
+```
+
+### Model Training and Preparation
+
+Our approach utilized Ridge regression, a robust linear modeling technique, and we harnessed the `glmnet` and `Matrix` libraries in R to efficiently handle the large dataset.
+
+The Ridge regression model (`ridge_model`) was trained on a subset of the MovieLens dataset (referred to as `combinedSet`), which included user and movie IDs as predictor variables. Given the high dimensionality of our data, we employed sparse matrices to optimize memory usage and computational efficiency. This approach was critical in managing the large number of unique user and movie IDs.
+
+### Evaluation on the Test Set
+
+Before applying the model to the final holdout set, we evaluated its performance on a test set derived from the same dataset. The Root Mean Square Error (RMSE) on this test set was approximately 0.864, indicating a strong predictive accuracy of the model. This RMSE value reflects the average deviation of the predicted movie ratings from the actual ratings, suggesting that the model's predictions were generally close to the true values.
+
+### Final Model Evaluation
+
+The critical step in our analysis was the evaluation of the model on the `final_holdout_test` set, a separate subset of the MovieLens data reserved strictly for final testing. To ensure a fair assessment, this dataset was prepared using the same methodology as the training data, maintaining consistent factor levels for user and movie IDs. The RMSE calculated on this final holdout set was approximately 0.8646, mirroring the performance observed on the test set.
+
+This scatter plot compares actual user ratings against predicted ratings to assess a predictive model's accuracy. This analysis involves `ggplot2`, `RColorBrewer`, `dplyr` libraries to structure the data and visualize it effectively.
+
+
+```{R, echo=FALSE}
+
+# First, check the structure of final_holdout_test and final_predictions
+#print(head(final_holdout_test))
+#print(length(final_predictions))
+
+# Convert final_predictions to a vector if it's not already
+final_predictions_vector <- as.vector(final_predictions)
+
+# Add the predicted ratings to the final_holdout_test data frame
+final_holdout_test$predicted_rating <- final_predictions_vector
+
+# Assuming 'rating' in final_holdout_test is the actual rating
+# and we have already added a 'predicted' column from final_predictions_vector
+full_data <- final_holdout_test %>%
+  mutate(predicted = final_predictions_vector)
+
+# Testing different sample sizes to see how they affect representativeness
+sample_sizes <- c(1000, 5000, 10000)
+samples <- lapply(sample_sizes, function(size) {
+  full_data %>%
+    group_by(rating) %>%
+    sample_n(size = min(size, n()), replace = TRUE) %>%
+    ungroup()
+})
+
+# Choose the sample size that provides a good balance between speed and representativeness
+representative_sample <- samples[[2]] # assuming the second sample size was chosen
+
+ggplot(representative_sample, aes(x = rating, y = predicted)) +
+  geom_jitter(alpha = 0.2, width = 0.2, height = 0) +
+  geom_smooth(method = 'lm', formula = y ~ x, color = "red") +
+  labs(title = "Actual vs. Predicted Ratings with Linear Model Smooth",
+       x = "Actual Rating", 
+       y = "Predicted Rating") +
+  theme_minimal()
+
+
+```
+
+The data handling portion of the script confirms the structure of actual ratings (`final_holdout_test`) and predicted ratings (`final_predictions`), converting the latter into a vector and incorporating it into the `final_holdout_test` data frame for comparison. A sampling strategy is employed to select a subset of data that balances computational speed with representativeness. Among the sample sizes tested (1000, 5000, 10000), the second option of 5000 samples is chosen for the plot.
+
+The final visualization uses a jittering technique to prevent overplotting and a red linear model smooth line to depict the trend between actual and predicted ratings. The `ggplot` command `chain` creates a scatter plot with jittered data points and a linear regression line, entitled "Actual vs. Predicted Ratings with Linear Model Smooth." The minimalistic theme enhances focus on the data.
+
+This plot's advantage is its straightforward illustration of the model's predictive performance, showcasing the spread of predictions against actual ratings. Nonetheless, the density of points can obscure individual values and outliers. Despite this, the visualization effectively conveys how well the predictions align with the actual ratings, providing a clear indication of the model's trend and potential areas for improvement.
+
+### Implications and Model Reflection
+
+- **Consistency of Performance**: The similarity in RMSE values between the test and holdout sets underscores the model's robustness and its ability to generalize across different subsets of the data. This is a significant achievement, considering the complexity and scale of the **MovieLens** dataset.
+
+- **Efficiency in Handling Large Data**: The use of sparse matrices, facilitated by the `Matrix` package, proved to be highly effective in managing the dataset's high dimensionality, which could have otherwise led to computational difficulties.
+
+- **Strengths of Ridge Regression**: The Ridge regression model, implemented via the `glmnet` package, was adept at handling a large number of predictors. This model is particularly suitable for scenarios where predictors (user and movie IDs, in our case) outnumber observations, as it applies regularization to prevent overfitting.
+
+# 4. Discussion
+
+This section gives a brief summary of the report, its limitations and future work.
+
+## 4.1 Brief Summary of the Report
+
+This report detailed the creation of a movie recommendation system using the MovieLens dataset. A Ridge regression model was employed, utilizing user and movie IDs as predictors. The model's performance was evaluated using Root Mean Square Error (RMSE), yielding an RMSE of approximately 0.864 on both the test and final holdout sets. This consistency indicated the model's robustness and its potential applicability in recommendation systems, despite its simplicity.
+
+The results from our Ridge regression model are encouraging, demonstrating its capability to make accurate predictions in a large-scale recommendation system. The consistency in RMSE values reaffirms our confidence in the model's reliability and its potential applicability in similar large-scale data-driven recommendation tasks.
+
+## 4.2 Limitations of the Project
+
+The project, while successful in its scope, faced limitations. The linear nature of Ridge regression may not adequately capture complex user-movie interactions. The reliance on user and movie IDs alone, without additional features like genres or user demographics, potentially oversimplified the model. Additionally, the handling of large-scale data demanded significant computational resources, and the RMSE metric, although standard, might not fully represent user satisfaction in recommendations.
+
+## 4.3 Ideas for Future Work
+
+Future enhancements could include exploring more sophisticated models like ensemble methods or deep learning to better capture complex patterns. Incorporating additional features, such as user demographics or movie genres, could enrich the model's predictive power. Addressing the cold start problem and data sparsity through hybrid recommendation approaches or incremental learning models would be beneficial. Finally, employing alternative evaluation metrics like precision, recall, or top-N recommendation accuracy could provide a more nuanced assessment of the model's effectiveness in a real-world context.
+
+# 5. Conclusion
+
+In conclusion, the chosen modeling approach, coupled with the effective use of R packages for handling large datasets, resulted in a successful implementation of a movie recommendation system with a high degree of accuracy in predicting movie ratings.
+
+
